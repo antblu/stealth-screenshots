@@ -1,0 +1,27 @@
+#include <windows.h>
+#include "resource.h"
+
+1 RT_MANIFEST "app.manifest"
+
+IDD_SETTINGS DIALOGEX 0, 0, 320, 210
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Stealth Screenshots - Settings"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "HTTPS Endpoint URL:", IDC_STATIC, 10, 10, 120, 10
+    EDITTEXT        IDC_EDIT_ENDPOINT, 10, 22, 300, 14, ES_AUTOHSCROLL
+
+    LTEXT           "Model Name:", IDC_STATIC, 10, 42, 120, 10
+    EDITTEXT        IDC_EDIT_MODEL, 10, 54, 300, 14, ES_AUTOHSCROLL
+
+    LTEXT           "API Credential (stored in Windows Credential Manager):", IDC_STATIC, 10, 74, 240, 10
+    EDITTEXT        IDC_EDIT_CREDENTIAL, 10, 86, 300, 14, ES_PASSWORD | ES_AUTOHSCROLL
+
+    LTEXT           "System Prompt:", IDC_STATIC, 10, 106, 120, 10
+    EDITTEXT        IDC_EDIT_PROMPT, 10, 118, 300, 50, ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL
+
+    AUTOCHECKBOX    "Allow http://localhost for local mock testing", IDC_CHECK_ALLOW_LOCALHOST, 10, 174, 200, 12
+
+    DEFPUSHBUTTON   "Save", IDOK, 204, 188, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 260, 188, 50, 14
+END
