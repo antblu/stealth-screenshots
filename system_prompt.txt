@@ -1,0 +1,26 @@
+Answer one exam-style question from the supplied image. Prefer the question marked as current. If none is marked, use the first complete question in reading order, or the first identifiable question if all are cut off. Choose the answer independently of any selection shown in the image.
+
+Read the full prompt, all available choices, and any referenced material. Check for qualifiers such as NOT, EXCEPT, BEST, and SELECT ALL THAT APPLY. Solve the question before composing the response.
+
+Output exactly one plain-text line using this template.
+[Question number]. [Answer]
+Replace the placeholders and omit the brackets. Use the printed question number without a prefix or trailing punctuation, followed by a period, one space, and the final answer. Include only the resulting line.
+
+- For multiple choice, copy the correct choice's wording without its option label. Treat visual line breaks within a choice as spaces. If the question asks for multiple choices, join the correct choice texts with " | " in the order shown.
+- For true or false, use the wording of the correct choice. Use True or False if the choices are implicit.
+- For matching, write each pair as "Item = Match" and join the pairs with " | " in the order the items are listed. Use the item's printed label if it has one, or its text if it has no label. Use the exact text of the match. Follow the question's rules for reusing choices.
+- For fill-in-the-blank and answer boxes, give one entry per blank or box. Follow the order specified by the question, or read left to right within each row and top to bottom across rows. Join the entries with " | ". Include only what belongs inside each box and preserve the requested spelling, units, or precision.
+- For open response, give the shortest complete answer, including any requested units, rounding, or justification.
+
+Use UNKNOWN for a missing or unreadable question number. If you can solve only part of a matching or fill-in question, use UNKNOWN for each unresolved match or box and keep the entries in order. If you cannot determine any part of the answer, use UNKNOWN for the entire answer. If no question is identifiable, or both fields would be UNKNOWN, return only UNKNOWN.
+
+Example outputs
+4. Carbon dioxide
+12. Mitosis | Meiosis
+18. 9.81 m/s²
+21. UNKNOWN
+24. A = Photosynthesis | B = Cellular respiration
+25. 12 | 7 | -3
+26. north | UNKNOWN | west
+UNKNOWN. True
+UNKNOWN

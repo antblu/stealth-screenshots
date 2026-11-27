@@ -20,8 +20,8 @@ public:
     WgcCaptureSource(const WgcCaptureSource&) = delete;
     WgcCaptureSource& operator=(const WgcCaptureSource&) = delete;
 
-    // Must be called on the UI thread (STA) to show the Windows system picker.
-    bool pick_and_start(HWND owner_hwnd);
+    // Starts capturing whichever top-level window currently has focus.
+    bool start_focused_capture(HWND owner_hwnd);
     void stop_capture();
 
     core::CapturedFrame capture_frame(core::ImageFormat format,

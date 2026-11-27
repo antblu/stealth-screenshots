@@ -44,6 +44,7 @@ if(WIN32)
     )
     if(MSVC)
         target_compile_options(stealth_screenshots PRIVATE /W4 /WX /permissive- /utf-8 /EHsc /await:strict)
+        target_link_options(stealth_screenshots PRIVATE /MANIFEST:NO)
     endif()
     target_link_libraries(stealth_screenshots PRIVATE
         stealth_core

@@ -1,0 +1,42 @@
+source:
+  type: mjpeg
+  url: "${MJPEG_URL}"
+  connect_timeout: 10
+  read_timeout: 30
+  reconnect: true
+  max_queue_size: 1
+
+detection:
+  visual_change_detection: true
+  ocr_enabled: true
+  ocr_backend: rapidocr
+  stability_check: true
+  deduplication: true
+  crop:
+    left: 0.26
+    top: 0.06
+    right: 0.74
+    bottom: 1.0
+    max_dim: 1024
+    jpeg_quality: 75
+
+llm:
+  endpoint: "${LLM_ENDPOINT}"
+  api_key: "${LLM_API_KEY}"
+  model: "${LLM_MODEL}"
+  system_prompt_file: "./system_prompt.txt"
+  temperature: 0
+  stream: false
+  timeout: 60
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+  bearer_token: "${SERVER_TOKEN}"
+
+storage:
+  backend: memory
+  max_history: 100
+
+logging:
+  level: INFO

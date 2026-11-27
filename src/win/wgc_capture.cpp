@@ -2,7 +2,6 @@
 
 #include <d3d11.h>
 #include <dxgi1_2.h>
-#include <shobjidl.h>
 #include <wincodec.h>
 #include <windows.graphics.capture.interop.h>
 #include <windows.graphics.directx.direct3d11.interop.h>
@@ -25,6 +24,20 @@ namespace wgd3d = winrt::Windows::Graphics::DirectX::Direct3D11;
 struct __declspec(uuid("A9B3D012-3DF2-4EE3-B8D1-8695F457D3C1"))
     IDirect3DDxgiInterfaceAccess : ::IUnknown {
     virtual HRESULT __stdcall GetInterface(REFIID iid, void** object) = 0;
+};
+
+struct ScopedComInit {
+    HRESULT hr = E_FAIL;
+    ScopedComInit() {
+        hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    }
+    ~ScopedComInit() {
+        if (SUCCEEDED(hr)) {
+            CoUninitialize();
+        }
+    }
+    ScopedComInit(const ScopedComInit&) = delete;
+    ScopedComInit& operator=(const ScopedComInit&) = delete;
 };
 
 winrt::com_ptr<ID3D11Device> create_d3d11_device() {
@@ -145,6 +158,8 @@ std::vector<std::uint8_t> encode_bgra_with_wic(
 struct WgcCaptureSource::Impl {
     std::mutex mutex;
     std::condition_variable cv;
+    HWND owner_hwnd = nullptr;
+    HWND target_hwnd = nullptr;
     winrt::com_ptr<ID3D11Device> d3d_device;
     winrt::com_ptr<ID3D11DeviceContext> d3d_context;
     wgd3d::IDirect3DDevice winrt_device{nullptr};
@@ -152,10 +167,36 @@ struct WgcCaptureSource::Impl {
     wgc::Direct3D11CaptureFramePool frame_pool{nullptr};
     wgc::GraphicsCaptureSession session{nullptr};
     wgc::Direct3D11CaptureFrame latest_frame{nullptr};
+    winrt::Windows::Graphics::SizeInt32 last_content_size{};
     winrt::event_token frame_arrived_token{};
     winrt::event_token closed_token{};
     std::atomic<bool> target_closed{false};
     std::atomic<bool> active{false};
+
+    void release_capture_session_locked() {
+        if (latest_frame) {
+            latest_frame.Close();
+            latest_frame = nullptr;
+        }
+        if (frame_pool) {
+            frame_pool.FrameArrived(frame_arrived_token);
+        }
+        if (item) {
+            item.Closed(closed_token);
+        }
+        if (session) {
+            session.Close();
+            session = nullptr;
+        }
+        if (frame_pool) {
+            frame_pool.Close();
+            frame_pool = nullptr;
+        }
+        item = nullptr;
+        target_hwnd = nullptr;
+        last_content_size = {};
+        target_closed.store(false);
+    }
 };
 
 WgcCaptureSource::WgcCaptureSource() : impl_(std::make_unique<Impl>()) {}
@@ -164,103 +205,25 @@ WgcCaptureSource::~WgcCaptureSource() {
     stop_capture();
 }
 
-bool WgcCaptureSource::pick_and_start(HWND owner_hwnd) {
+bool WgcCaptureSource::start_focused_capture(HWND owner_hwnd) {
     stop_capture();
 
     if (!wgc::GraphicsCaptureSession::IsSupported()) {
         return false;
     }
 
-    wgc::GraphicsCapturePicker picker;
-    auto init_with_window = picker.as<IInitializeWithWindow>();
-    if (FAILED(init_with_window->Initialize(owner_hwnd))) {
-        return false;
-    }
-
-    // Pump picker synchronously on the STA UI thread.
-    auto item = picker.PickSingleItemAsync().get();
-    if (!item) {
-        return false;
-    }
-
-    auto d3d_device = create_d3d11_device();
-    winrt::com_ptr<ID3D11DeviceContext> d3d_context;
-    d3d_device->GetImmediateContext(d3d_context.put());
-
-    winrt::com_ptr<IDXGIDevice> dxgi_device = d3d_device.as<IDXGIDevice>();
-    winrt::com_ptr<::IInspectable> inspectable_device;
-    winrt::check_hresult(CreateDirect3D11DeviceFromDXGIDevice(
-        dxgi_device.get(), inspectable_device.put()));
-    auto winrt_device = inspectable_device.as<wgd3d::IDirect3DDevice>();
-
-    const auto size = item.Size();
-    auto frame_pool = wgc::Direct3D11CaptureFramePool::CreateFreeThreaded(
-        winrt_device,
-        wgdx::DirectXPixelFormat::B8G8R8A8UIntNormalized,
-        2,
-        size);
-    auto session = frame_pool.CreateCaptureSession(item);
-    // Keep Windows' capture indicator enabled (default IsBorderRequired is true).
-
     std::lock_guard lock(impl_->mutex);
-    impl_->d3d_device = std::move(d3d_device);
-    impl_->d3d_context = std::move(d3d_context);
-    impl_->winrt_device = std::move(winrt_device);
-    impl_->item = std::move(item);
-    impl_->frame_pool = std::move(frame_pool);
-    impl_->session = std::move(session);
-    impl_->latest_frame = nullptr;
+    impl_->owner_hwnd = owner_hwnd;
     impl_->target_closed.store(false);
     impl_->active.store(true);
-
-    impl_->closed_token = impl_->item.Closed([this](auto const&, auto const&) {
-        impl_->target_closed.store(true);
-        impl_->cv.notify_all();
-    });
-
-    impl_->frame_arrived_token =
-        impl_->frame_pool.FrameArrived([this](wgc::Direct3D11CaptureFramePool const& sender,
-                                              auto const&) {
-            auto frame = sender.TryGetNextFrame();
-            if (!frame) {
-                return;
-            }
-            {
-                std::lock_guard frame_lock(impl_->mutex);
-                if (impl_->latest_frame) {
-                    impl_->latest_frame.Close();
-                }
-                impl_->latest_frame = std::move(frame);
-            }
-            impl_->cv.notify_all();
-        });
-
-    impl_->session.StartCapture();
     return true;
 }
 
 void WgcCaptureSource::stop_capture() {
     std::lock_guard lock(impl_->mutex);
     impl_->active.store(false);
-    if (impl_->latest_frame) {
-        impl_->latest_frame.Close();
-        impl_->latest_frame = nullptr;
-    }
-    if (impl_->frame_pool) {
-        impl_->frame_pool.FrameArrived(impl_->frame_arrived_token);
-    }
-    if (impl_->item) {
-        impl_->item.Closed(impl_->closed_token);
-    }
-    if (impl_->session) {
-        impl_->session.Close();
-        impl_->session = nullptr;
-    }
-    if (impl_->frame_pool) {
-        impl_->frame_pool.Close();
-        impl_->frame_pool = nullptr;
-    }
-    impl_->item = nullptr;
+    impl_->release_capture_session_locked();
+    impl_->owner_hwnd = nullptr;
     impl_->winrt_device = nullptr;
     impl_->d3d_context = nullptr;
     impl_->d3d_device = nullptr;
@@ -270,42 +233,155 @@ void WgcCaptureSource::stop_capture() {
 core::CapturedFrame WgcCaptureSource::capture_frame(core::ImageFormat format,
                                                     std::uint32_t max_dimension,
                                                     std::size_t max_bytes) {
-    if (impl_->target_closed.load()) {
-        return {core::CaptureStatus::TargetClosed, {}, {}, 0, 0};
-    }
     if (!impl_->active.load()) {
         return {core::CaptureStatus::Error, {}, {}, 0, 0};
+    }
+
+    HWND fg = GetForegroundWindow();
+    if (fg) {
+        HWND root = GetAncestor(fg, GA_ROOT);
+        if (root) {
+            fg = root;
+        }
+    }
+
+    HWND owner = nullptr;
+    {
+        std::lock_guard lock(impl_->mutex);
+        owner = impl_->owner_hwnd;
+    }
+
+    if (!fg || !IsWindow(fg) || !IsWindowVisible(fg) || IsIconic(fg) || fg == owner) {
+        return {core::CaptureStatus::NoNewFrame, {}, {}, 0, 0};
     }
 
     wgc::Direct3D11CaptureFrame frame{nullptr};
     winrt::com_ptr<ID3D11Device> d3d_device;
     winrt::com_ptr<ID3D11DeviceContext> d3d_context;
 
-    {
-        std::unique_lock lock(impl_->mutex);
-        impl_->cv.wait_for(lock, std::chrono::milliseconds(500), [this]() {
-            return impl_->latest_frame != nullptr ||
-                   impl_->target_closed.load() ||
-                   !impl_->active.load();
-        });
+    try {
+        ScopedComInit com_init;
 
-        if (impl_->target_closed.load()) {
-            return {core::CaptureStatus::TargetClosed, {}, {}, 0, 0};
+        {
+            std::lock_guard lock(impl_->mutex);
+            if (!impl_->active.load()) {
+                return {core::CaptureStatus::Error, {}, {}, 0, 0};
+            }
+
+            if (fg != impl_->target_hwnd || impl_->target_closed.load() || !impl_->session) {
+                impl_->release_capture_session_locked();
+
+                if (!impl_->d3d_device) {
+                    impl_->d3d_device = create_d3d11_device();
+                    impl_->d3d_device->GetImmediateContext(impl_->d3d_context.put());
+                    winrt::com_ptr<IDXGIDevice> dxgi_device = impl_->d3d_device.as<IDXGIDevice>();
+                    winrt::com_ptr<::IInspectable> inspectable_device;
+                    winrt::check_hresult(CreateDirect3D11DeviceFromDXGIDevice(
+                        dxgi_device.get(), inspectable_device.put()));
+                    impl_->winrt_device = inspectable_device.as<wgd3d::IDirect3DDevice>();
+                }
+
+                auto interop = winrt::get_activation_factory<
+                    wgc::GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
+                wgc::GraphicsCaptureItem item{nullptr};
+                if (FAILED(interop->CreateForWindow(
+                        fg,
+                        winrt::guid_of<wgc::GraphicsCaptureItem>(),
+                        winrt::put_abi(item))) ||
+                    !item) {
+                    return {core::CaptureStatus::NoNewFrame, {}, {}, 0, 0};
+                }
+
+                const auto size = item.Size();
+                if (size.Width <= 0 || size.Height <= 0) {
+                    return {core::CaptureStatus::NoNewFrame, {}, {}, 0, 0};
+                }
+
+                auto frame_pool = wgc::Direct3D11CaptureFramePool::CreateFreeThreaded(
+                    impl_->winrt_device,
+                    wgdx::DirectXPixelFormat::B8G8R8A8UIntNormalized,
+                    2,
+                    size);
+                auto session = frame_pool.CreateCaptureSession(item);
+
+                impl_->item = std::move(item);
+                impl_->frame_pool = std::move(frame_pool);
+                impl_->session = std::move(session);
+                impl_->target_hwnd = fg;
+                impl_->last_content_size = size;
+                impl_->target_closed.store(false);
+
+                impl_->closed_token = impl_->item.Closed([this](auto const&, auto const&) {
+                    impl_->target_closed.store(true);
+                    impl_->cv.notify_all();
+                });
+
+                impl_->frame_arrived_token =
+                    impl_->frame_pool.FrameArrived([this](wgc::Direct3D11CaptureFramePool const& sender,
+                                                          auto const&) {
+                        auto arrived = sender.TryGetNextFrame();
+                        if (!arrived) {
+                            return;
+                        }
+                        {
+                            std::lock_guard frame_lock(impl_->mutex);
+                            if (impl_->latest_frame) {
+                                impl_->latest_frame.Close();
+                            }
+                            impl_->latest_frame = std::move(arrived);
+                        }
+                        impl_->cv.notify_all();
+                    });
+
+                impl_->session.StartCapture();
+            }
         }
-        if (!impl_->active.load()) {
-            return {core::CaptureStatus::Error, {}, {}, 0, 0};
+
+        {
+            std::unique_lock lock(impl_->mutex);
+            impl_->cv.wait_for(lock, std::chrono::milliseconds(500), [this]() {
+                return impl_->latest_frame != nullptr ||
+                       impl_->target_closed.load() ||
+                       !impl_->active.load();
+            });
+
+            if (!impl_->active.load()) {
+                return {core::CaptureStatus::Error, {}, {}, 0, 0};
+            }
+            if (impl_->target_closed.load()) {
+                impl_->release_capture_session_locked();
+                return {core::CaptureStatus::NoNewFrame, {}, {}, 0, 0};
+            }
+            if (!impl_->latest_frame) {
+                return {core::CaptureStatus::NoNewFrame, {}, {}, 0, 0};
+            }
+
+            frame = std::move(impl_->latest_frame);
+            impl_->latest_frame = nullptr;
+            d3d_device = impl_->d3d_device;
+            d3d_context = impl_->d3d_context;
         }
-        if (!impl_->latest_frame) {
+
+        const auto content_size = frame.ContentSize();
+        if (content_size.Width <= 0 || content_size.Height <= 0) {
+            frame.Close();
             return {core::CaptureStatus::NoNewFrame, {}, {}, 0, 0};
         }
 
-        frame = std::move(impl_->latest_frame);
-        impl_->latest_frame = nullptr;
-        d3d_device = impl_->d3d_device;
-        d3d_context = impl_->d3d_context;
-    }
+        {
+            std::lock_guard lock(impl_->mutex);
+            if (impl_->frame_pool && impl_->winrt_device &&
+                (content_size.Width != impl_->last_content_size.Width ||
+                 content_size.Height != impl_->last_content_size.Height)) {
+                impl_->frame_pool.Recreate(
+                    impl_->winrt_device,
+                    wgdx::DirectXPixelFormat::B8G8R8A8UIntNormalized,
+                    2,
+                    content_size);
+                impl_->last_content_size = content_size;
+            }
+        }
 
-    try {
         auto surface = frame.Surface();
         auto access = surface.as<IDirect3DDxgiInterfaceAccess>();
         winrt::com_ptr<ID3D11Texture2D> src_tex;
@@ -369,7 +445,9 @@ core::CapturedFrame WgcCaptureSource::capture_frame(core::ImageFormat format,
             .height = desc.Height,
         };
     } catch (...) {
-        frame.Close();
+        if (frame) {
+            frame.Close();
+        }
         return {core::CaptureStatus::Error, {}, {}, 0, 0};
     }
 }

@@ -1,6 +1,10 @@
 #include <windows.h>
 #include "resource.h"
 
+#ifndef IDC_STATIC
+#define IDC_STATIC (-1)
+#endif
+
 1 RT_MANIFEST "app.manifest"
 
 IDD_SETTINGS DIALOGEX 0, 0, 320, 210

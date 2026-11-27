@@ -24,11 +24,14 @@ public:
     bool create();
     int run_message_loop();
 
+    static bool activate_existing_instance();
+
 private:
     static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
     LRESULT handle_message(UINT msg, WPARAM wparam, LPARAM lparam);
 
     void create_controls();
+    void layout_for_dpi(UINT dpi, const RECT* suggested_rect);
     void on_start();
     void on_pause_resume();
     void on_stop(const std::string& reason = "Stopped");

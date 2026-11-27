@@ -1,0 +1,28 @@
+services:
+  mjpeg-question-llm:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mjpeg-question-llm
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MJPEG_URL: ${MJPEG_URL:-http://host.docker.internal:8080/stream}
+      LLM_ENDPOINT: ${LLM_ENDPOINT:?Set LLM_ENDPOINT in .env}
+      LLM_MODEL: ${LLM_MODEL:?Set LLM_MODEL in .env}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      SERVER_TOKEN: ${SERVER_TOKEN:-}
+    ports:
+      - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Optional Linux host networking (uncomment and remove ports/extra_hosts above):
+    # network_mode: host
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped

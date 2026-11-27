@@ -22,7 +22,22 @@ constexpr int HOTKEY_TOGGLE_WINDOW = 1;  // Ctrl+Alt+O
 constexpr int HOTKEY_PAUSE_RESUME = 2;   // Ctrl+Alt+P
 constexpr int HOTKEY_STOP_SESSION = 3;   // Ctrl+Alt+S
 
+constexpr DWORD kWindowStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+constexpr DWORD kWindowExStyle = 0;
+constexpr int kClientWidthDip = 420;
+constexpr int kClientHeightDip = 176;
+
 }  // namespace
+
+bool AppWindow::activate_existing_instance() {
+    HWND existing = FindWindowW(kWindowClassName, nullptr);
+    if (!existing) {
+        return false;
+    }
+    ShowWindow(existing, IsIconic(existing) ? SW_RESTORE : SW_SHOW);
+    SetForegroundWindow(existing);
+    return true;
+}
 
 AppWindow::AppWindow(HINSTANCE instance) : instance_(instance) {
     settings_ = SettingsStore::load();
@@ -70,15 +85,20 @@ bool AppWindow::create() {
         return false;
     }
 
+    const UINT sys_dpi = GetDpiForSystem();
+    RECT rc{0, 0, MulDiv(kClientWidthDip, static_cast<int>(sys_dpi), 96),
+            MulDiv(kClientHeightDip, static_cast<int>(sys_dpi), 96)};
+    AdjustWindowRectExForDpi(&rc, kWindowStyle, FALSE, kWindowExStyle, sys_dpi);
+
     hwnd_ = CreateWindowExW(
-        0,
+        kWindowExStyle,
         kWindowClassName,
         L"Stealth Screenshots",
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+        kWindowStyle,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
-        420,
-        210,
+        rc.right - rc.left,
+        rc.bottom - rc.top,
         nullptr,
         nullptr,
         instance_,
@@ -123,12 +143,20 @@ LRESULT AppWindow::handle_message(UINT msg, WPARAM wparam, LPARAM lparam) {
     switch (msg) {
         case WM_CREATE:
             create_controls();
+            layout_for_dpi(GetDpiForWindow(hwnd_), nullptr);
             WTSRegisterSessionNotification(hwnd_, NOTIFY_FOR_THIS_SESSION);
             RegisterHotKey(hwnd_, HOTKEY_TOGGLE_WINDOW, MOD_CONTROL | MOD_ALT, 'O');
             RegisterHotKey(hwnd_, HOTKEY_PAUSE_RESUME, MOD_CONTROL | MOD_ALT, 'P');
             RegisterHotKey(hwnd_, HOTKEY_STOP_SESSION, MOD_CONTROL | MOD_ALT, 'S');
             update_ui_from_snapshot(controller_->snapshot());
             return 0;
+
+        case WM_DPICHANGED: {
+            const UINT new_dpi = HIWORD(wparam);
+            const auto* suggested_rect = reinterpret_cast<const RECT*>(lparam);
+            layout_for_dpi(new_dpi, suggested_rect);
+            return 0;
+        }
 
         case WM_COMMAND:
             switch (LOWORD(wparam)) {
@@ -221,36 +249,81 @@ LRESULT AppWindow::handle_message(UINT msg, WPARAM wparam, LPARAM lparam) {
 }
 
 void AppWindow::create_controls() {
-    ui_font_ = CreateFontW(
-        -14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-
-    auto make_ctrl = [&](const wchar_t* cls, const wchar_t* text, DWORD style,
-                         int x, int y, int w, int h, int id) -> HWND {
-        HWND hctrl = CreateWindowExW(
+    auto make_ctrl = [&](const wchar_t* cls, const wchar_t* text, DWORD style, int id) -> HWND {
+        return CreateWindowExW(
             0, cls, text, WS_CHILD | WS_VISIBLE | style,
-            x, y, w, h, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
+            0, 0, 0, 0, hwnd_,
+            reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
             instance_, nullptr);
-        if (hctrl && ui_font_) {
-            SendMessageW(hctrl, WM_SETFONT, reinterpret_cast<WPARAM>(ui_font_), TRUE);
-        }
-        return hctrl;
     };
 
-    status_label_ = make_ctrl(L"STATIC", L"Status: Idle", 0, 16, 16, 370, 22, 0);
+    status_label_ = make_ctrl(L"STATIC", L"Status: Idle", SS_NOPREFIX | SS_ENDELLIPSIS, 0);
     stats_label_ = make_ctrl(L"STATIC", L"Captured: 0  |  Uploaded: 0  |  Skipped: 0",
-                             0, 16, 42, 370, 22, 0);
+                             SS_NOPREFIX, 0);
 
-    btn_start_ = make_ctrl(L"BUTTON", L"Start...", BS_DEFPUSHBUTTON, 16, 78, 86, 30, IDC_BTN_START);
-    btn_pause_ = make_ctrl(L"BUTTON", L"Pause", 0, 110, 78, 86, 30, IDC_BTN_PAUSE);
-    btn_stop_ = make_ctrl(L"BUTTON", L"Stop", 0, 204, 78, 86, 30, IDC_BTN_STOP);
-    btn_settings_ = make_ctrl(L"BUTTON", L"Settings...", 0, 298, 78, 88, 30, IDC_BTN_SETTINGS);
+    btn_start_ = make_ctrl(L"BUTTON", L"Start", BS_DEFPUSHBUTTON, IDC_BTN_START);
+    btn_pause_ = make_ctrl(L"BUTTON", L"Pause", 0, IDC_BTN_PAUSE);
+    btn_stop_ = make_ctrl(L"BUTTON", L"Stop", 0, IDC_BTN_STOP);
+    btn_settings_ = make_ctrl(L"BUTTON", L"Settings...", 0, IDC_BTN_SETTINGS);
 
     hotkey_label_ = make_ctrl(
         L"STATIC",
         L"Hotkeys: Ctrl+Alt+O (Show/Hide)  |  Ctrl+Alt+P (Pause)  |  Ctrl+Alt+S (Stop)",
-        0, 16, 126, 380, 32, 0);
+        SS_NOPREFIX, 0);
+}
+
+void AppWindow::layout_for_dpi(UINT dpi, const RECT* suggested_rect) {
+    const int scale_dpi = static_cast<int>(dpi > 0 ? dpi : 96);
+    auto sx = [scale_dpi](int v) { return MulDiv(v, scale_dpi, 96); };
+
+    HFONT new_font = CreateFontW(
+        -sx(14), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+
+    auto place_ctrl = [&](HWND ctrl, int x, int y, int w, int h) {
+        if (!ctrl) {
+            return;
+        }
+        if (new_font) {
+            SendMessageW(ctrl, WM_SETFONT, reinterpret_cast<WPARAM>(new_font), FALSE);
+        }
+        SetWindowPos(ctrl, nullptr, sx(x), sx(y), sx(w), sx(h),
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+    };
+
+    place_ctrl(status_label_, 16, 16, 388, 22);
+    place_ctrl(stats_label_, 16, 44, 388, 22);
+
+    place_ctrl(btn_start_, 16, 78, 88, 30);
+    place_ctrl(btn_pause_, 114, 78, 88, 30);
+    place_ctrl(btn_stop_, 212, 78, 88, 30);
+    place_ctrl(btn_settings_, 310, 78, 94, 30);
+
+    place_ctrl(hotkey_label_, 16, 124, 388, 36);
+
+    if (new_font) {
+        if (ui_font_) {
+            DeleteObject(ui_font_);
+        }
+        ui_font_ = new_font;
+    }
+
+    RECT rc{0, 0, sx(kClientWidthDip), sx(kClientHeightDip)};
+    AdjustWindowRectExForDpi(&rc, kWindowStyle, FALSE, kWindowExStyle,
+                             static_cast<UINT>(scale_dpi));
+    const int win_w = rc.right - rc.left;
+    const int win_h = rc.bottom - rc.top;
+
+    if (suggested_rect) {
+        SetWindowPos(hwnd_, nullptr, suggested_rect->left, suggested_rect->top,
+                     win_w, win_h, SWP_NOZORDER | SWP_NOACTIVATE);
+    } else {
+        SetWindowPos(hwnd_, nullptr, 0, 0, win_w, win_h,
+                     SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+
+    InvalidateRect(hwnd_, nullptr, TRUE);
 }
 
 core::ApiContractConfig AppWindow::build_contract() const {
@@ -269,15 +342,19 @@ void AppWindow::on_start() {
         }
     }
 
-    if (!capture_source_->pick_and_start(hwnd_)) {
+    if (!capture_source_->start_focused_capture(hwnd_)) {
+        MessageBoxW(hwnd_,
+                    L"Windows Graphics Capture is not supported on this system.",
+                    L"Capture Unavailable",
+                    MB_OK | MB_ICONERROR);
         return;
     }
 
+    // Run without a foreground window once the session starts so the active window regains focus.
+    ShowWindow(hwnd_, SW_HIDE);
+
     controller_->start(build_contract(), api_credential_, settings_.system_prompt);
     update_ui_from_snapshot(controller_->snapshot());
-
-    // Run without a foreground window once the session starts.
-    ShowWindow(hwnd_, SW_HIDE);
 }
 
 void AppWindow::on_pause_resume() {

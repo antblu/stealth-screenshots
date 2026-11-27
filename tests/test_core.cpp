@@ -162,7 +162,7 @@ void test_json_serialization_and_status() {
     CHECK(classify_http_status(403) == ErrorCategory::Auth);
     CHECK(classify_http_status(429) == ErrorCategory::RateLimit);
     CHECK(classify_http_status(503) == ErrorCategory::Server);
-    CHECK(parse_retry_after_seconds(" 15 ") == 15);
+    CHECK(parse_retry_after_seconds(" 15 ") == 15u);
     CHECK(!parse_retry_after_seconds("abc").has_value());
 }
 
